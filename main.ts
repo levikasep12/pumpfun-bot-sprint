@@ -4,11 +4,13 @@
 // Idea: most new pump.fun coins die fast, but the ones that keep attracting
 // broad, accelerating buy flow for a few minutes after launch sometimes run
 // much further. This bot only buys coins whose recent tape shows that flow
-// (several distinct buyers, net SOL still coming in, price rising but not
-// already vertical), starts small, adds once into strength, and gets out
-// fast on a stop loss, a take profit, a trailing stop, fading flow, or the
-// creator selling. A tiny probe round-trip keeps the run above the
-// guardrail (20 distinct coins) when the main signal goes quiet.
+// (at least 2 SOL of net inflow from at least 8 distinct buyers across at
+// least 8 trades in the last 60 slots, price rising but not already
+// vertical), buys once, and gets out fast on a stop loss, a take profit, a
+// trailing stop, fading flow, or the creator selling. No adds and no
+// re-entries: on the dev window both tested worse than a single first buy.
+// A tiny probe round-trip keeps the run above the guardrail (20 distinct
+// coins) when the main signal goes quiet.
 //
 // The bot is a pure function of the hello message and the batches it is
 // fed: no clock, no randomness, no I/O, no environment. Iteration is only
@@ -58,10 +60,8 @@ interface Params {
   maxRealSol: number;
   /** Slots since CreateEvent before an entry is allowed. */
   minAge: number;
-  /** First buy of a position, SOL. */
+  /** The one buy of a position, SOL (no adds: re-entries tested worse). */
   firstBuySol: number;
-  /** One add-on buy, SOL. */
-  addSol: number;
   /** Most SOL into one coin in total. */
   stakeSol: number;
   /** Smallest buy worth sending, SOL. */
@@ -87,10 +87,6 @@ interface Params {
   cooldown: number;
   /** Most entries per coin over the run. */
   maxEntries: number;
-  /** Price must be this far above the last buy's price before an add. */
-  addStep: number;
-  /** An add needs net inflow over the window of at least this (SOL). */
-  addMinNetSol: number;
   /** Most momentum positions open at once. */
   maxMain: number;
   /** Most SOL at cost across all positions at once. */
@@ -107,9 +103,9 @@ interface Params {
 
 const P: Params = {
   window: 60,
-  minNetSol: 0.5,
-  minBuys: 4,
-  minBuyers: 4,
+  minNetSol: 2,
+  minBuys: 8,
+  minBuyers: 8,
   minRise: 0.03,
   maxRise: 1.2,
   nearHigh: 0.9,
@@ -118,23 +114,20 @@ const P: Params = {
   minRealSol: 1,
   maxRealSol: 80,
   minAge: 240,
-  firstBuySol: 0.1,
-  addSol: 0.25,
-  stakeSol: 0.6,
+  firstBuySol: 0.2,
+  stakeSol: 0.2,
   minBuySol: 0.01,
   buySlipBps: 1000,
-  stopLoss: 0.15,
-  takeProfit: 0.35,
+  stopLoss: 0.12,
+  takeProfit: 0.15,
   trailArm: 0.1,
   trailDrop: 0.25,
-  maxHold: 1800,
+  maxHold: 600,
   fadeWindow: 20,
   fadeNetSol: -0.5,
   bigSellSol: 2,
   cooldown: 300,
-  maxEntries: 2,
-  addStep: 0.05,
-  addMinNetSol: 0.3,
+  maxEntries: 1,
   maxMain: 5,
   maxExposureSol: 3,
   targetFills: 300,
@@ -167,7 +160,6 @@ interface Held {
   opened: number;
   peak: number; // best close value seen, SOL
   invested: number; // SOL sent in buys (fees included in cost, not here)
-  lastBuyPrice: number;
   exiting: boolean;
   filled: boolean;
 }
@@ -386,7 +378,9 @@ await runBot({
       orders.push({ side: 'sell', mint, token_amount: pos.token_amount, max_slippage_bps: BPS });
     }
 
-    // --- Entries and adds.
+    // --- Entries: one buy per coin, first fire only. No adds and no
+    // re-entries: on the dev window both tested worse than a single
+    // first buy (they mostly averaged down into coins already fading).
     let free = Number(state.freeCashLamports()) / SOL;
     let slotsLeft = state.hello.caps.max_open_positions - state.committedPositionCount();
     let mainLeft = P.maxMain - held.size;
@@ -400,45 +394,25 @@ await runBot({
       if (curve === undefined || curve.complete) continue;
       if (pendingSide(state, mint, 'buy') || pendingSide(state, mint, 'sell')) continue;
       if (probes.has(mint)) continue;
+      if (held.has(mint)) continue;
       const t = tapes.get(mint)!;
-      const h = held.get(mint);
       const r = reservesOf(mint);
       if (r === null) continue;
-      const price = Number(r.vq) / Number(r.vt);
-      let want: number;
-      if (h === undefined) {
-        if (slotsLeft <= 0 || mainLeft <= 0) continue;
-        if (t.entries >= P.maxEntries || now - t.lastExit < P.cooldown) continue;
-        if (!entryOk(t, now, r.realSol)) continue;
-        want = Math.min(P.firstBuySol, P.stakeSol);
-      } else {
-        // Add once into strength: price stepped up from the last buy and
-        // net flow over the entry window is still positive.
-        if (h.exiting || !h.filled || h.invested >= P.stakeSol - P.minBuySol) continue;
-        const pos = state.positions.get(mint);
-        if (pos === undefined) continue;
-        if (price < h.lastBuyPrice * (1 + P.addStep)) continue;
-        if (flow(t, now, P.window) < P.addMinNetSol) continue;
-        if (r.realSol > P.maxRealSol) continue;
-        want = Math.min(P.addSol, P.stakeSol - h.invested);
-      }
+      if (slotsLeft <= 0 || mainLeft <= 0) continue;
+      if (t.entries >= P.maxEntries || now - t.lastExit < P.cooldown) continue;
+      if (!entryOk(t, now, r.realSol)) continue;
       const capSol = Math.floor(Number(state.maxBuyLamports(mint))) / SOL;
-      let amount = Math.min(capSol, want, P.maxExposureSol - exposure);
+      let amount = Math.min(capSol, P.firstBuySol, P.stakeSol, P.maxExposureSol - exposure);
       if (amount > free - txSol) amount = free - txSol;
       if (amount < P.minBuySol) continue;
       const lamports = BigInt(Math.floor(amount * SOL));
       orders.push({ side: 'buy', mint, quote_lamports: lamports, max_slippage_bps: P.buySlipBps });
       free -= amount + txSol;
       exposure += amount;
-      if (h === undefined) {
-        held.set(mint, { opened: now, peak: 0, invested: amount, lastBuyPrice: price, exiting: false, filled: false });
-        t.entries++;
-        slotsLeft--;
-        mainLeft--;
-      } else {
-        h.invested += amount;
-        h.lastBuyPrice = price;
-      }
+      held.set(mint, { opened: now, peak: 0, invested: amount, exiting: false, filled: false });
+      t.entries++;
+      slotsLeft--;
+      mainLeft--;
     }
 
     // --- Guardrail pacing: open a tiny probe round trip when fills or

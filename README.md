@@ -16,9 +16,9 @@ The bot speaks agent-fun/replay/v2 on stdin/stdout: the harness sends a `hello` 
 
 ## Strategy
 
-- **Entry:** a coin at least 240 slots old, with 1–80 SOL of real reserves, whose last 60 slots show net inflow ≥ 0.5 SOL from ≥ 4 buyers across ≥ 4 trades, price up 3–120% and near its window high, inflow accelerating into the newer half of the window, and no single buyer over 60% of the buy flow. The creator must not have sold.
-- **Sizing:** first buy 0.10 SOL, one add of 0.25 SOL into strength, at most 0.60 SOL per coin and 3 SOL exposed at once, at most 5 positions.
-- **Exits:** stop loss −15%, take profit +35%, trailing stop 25% once up 10%, max hold 1,800 slots (doubled while up), exit on fading flow, a single sell ≥ 2 SOL, or the creator selling.
+- **Entry:** a coin at least 240 slots old, with 1–80 SOL of real reserves, whose last 60 slots show net inflow ≥ 2 SOL from ≥ 8 buyers across ≥ 8 trades, price up 3–120% and near its window high, inflow accelerating into the newer half of the window, and no single buyer over 60% of the buy flow. The creator must not have sold. One buy per coin, first fire only.
+- **Sizing:** 0.20 SOL per coin, at most 3 SOL exposed at once, at most 5 positions.
+- **Exits:** stop loss −12%, take profit +15%, trailing stop 25% once up 10%, max hold 600 slots (doubled while up), exit on fading flow, a single sell ≥ 2 SOL, or the creator selling.
 - **Guardrail:** tiny 0.02 SOL probe round trips keep the run above the 20-coin minimum when the main signal goes quiet.
 
 ---
